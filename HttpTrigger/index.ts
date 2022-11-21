@@ -1,13 +1,13 @@
-import * as appInsights from 'applicationinsights';
-appInsights.setup(process.env["APPLICATIONINSIGHTS_CONNECTION_STRING"])
-  .setDistributedTracingMode(appInsights.DistributedTracingModes.AI_AND_W3C);
-appInsights.defaultClient.setAutoPopulateAzureProperties(true);
-appInsights.start();
-
-import { Context, HttpRequest } from "@azure/functions";
 import { EventGridPublisherClient, AzureKeyCredential } from "@azure/eventgrid";
+import { AzureFunction, Context, HttpRequest, TraceContext } from "@azure/functions"
+import * as opentelemetry from "@opentelemetry/api";
+import { NodeTracerProvider, BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
+import { AzureMonitorTraceExporter } from "@azure/monitor-opentelemetry-exporter";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { Resource } from "@opentelemetry/resources";
+import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
 
-const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> => {
+const httpTrigger: AzureFunction = async function (context: Context, req: HttpRequest): Promise<void> {
   context.log('HTTP trigger function processed a request.');
   context.log(`context.traceContext: ${JSON.stringify(context.traceContext)}`);
   context.log(`req: ${JSON.stringify(req)}`);
@@ -16,42 +16,94 @@ const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> =>
   const responseMessage = name
     ? "Hello, " + name + ". This HTTP triggered function executed successfully."
     : "This HTTP triggered function executed successfully. Pass a name in the query string or in the request body for a personalized response.";
-  
-  const client = new EventGridPublisherClient(
-    process.env["EVENTGRID_ENDPOINT"],
-    "CloudEvent",
-    new AzureKeyCredential(process.env["EVENTGRID_ACCESS_KEY"])
+
+  const resource =
+    Resource.default().merge(
+      new Resource({
+        [SemanticResourceAttributes.FAAS_NAME]: "Http Function",
+        [SemanticResourceAttributes.FAAS_VERSION]: "0.1.0",
+      })
+    );
+  const provider = new NodeTracerProvider({
+    resource: resource,
+  });
+  const exporter = new AzureMonitorTraceExporter({
+    connectionString:
+      process.env["APPLICATIONINSIGHTS_CONNECTION_STRING"],
+  });
+  const processor = new BatchSpanProcessor(exporter);
+  provider.addSpanProcessor(processor);
+  provider.register();
+
+  const tracer = opentelemetry.trace.getTracer("EventGridProducer");
+
+  const cloudeventGetter: opentelemetry.TextMapGetter<TraceContext> = {
+    get(carrier: TraceContext, key: string) {
+      if (key === "traceparent") {
+        return carrier.traceparent;
+      } else if (key === "tracestate") {
+        return carrier.tracestate;
+      }
+    },
+    keys(carrier: TraceContext) {
+      return ["traceparent", "tracestate"];
+    },
+  };
+
+  const cloudeventSetter: opentelemetry.TextMapSetter<TraceContext> = {
+    set(carrier: TraceContext, key: string, value: string) {
+      if (key === "traceparent") {
+        carrier.traceparent = value;
+      } else if (key === "tracestate") {
+        carrier.tracestate = value;
+      }
+    },
+  };
+
+  const propagator = new W3CTraceContextPropagator();
+  const ctx = propagator.extract(
+    opentelemetry.ROOT_CONTEXT,
+    context.traceContext,
+    cloudeventGetter
   );
 
-  await client.send([
-    {
-      type: "azure.sdk.eventgrid.samples.cloudevent",
-      source: "/azure/sdk/eventgrid/samples/sendEventSample",
-      data: {
-        message: responseMessage
+  const traceContext: TraceContext = {
+    traceparent: undefined,
+    tracestate: undefined,
+    attributes: undefined
+  };
+
+  tracer.startActiveSpan('Send EventGrid event', {}, ctx, async (span) => {
+    const client = new EventGridPublisherClient(
+      process.env["EVENTGRID_ENDPOINT"],
+      "CloudEvent",
+      new AzureKeyCredential(process.env["EVENTGRID_ACCESS_KEY"])
+    );
+
+    propagator.inject(opentelemetry.context.active(), traceContext, cloudeventSetter);
+
+    await client.send([
+      {
+        type: "azure.sdk.eventgrid.samples.cloudevent",
+        source: "/azure/sdk/eventgrid/samples/sendEventSample",
+        data: {
+          message: responseMessage
+        },
+        extensionAttributes:
+        {
+          traceparent: traceContext.traceparent,
+          tracestate: traceContext.tracestate
+        }
       },
-    },
-  ]);
+    ]);
+    span.end();
+  });
 
   context.res = {
     // status: 200, /* Defaults to 200 */
-    body: responseMessage
+    body: { responseMessage, traceContext }
   };
 
 };
 
-// Default export wrapped with Application Insights FaaS context propagation
-export default async function contextPropagatingHttpTrigger(context, req) {
-  // Start an AI Correlation Context using the provided Function context
-  const correlationContext = appInsights.startOperation(context, req);
-
-  // Wrap the Function runtime with correlationContext
-  return appInsights.wrapWithCorrelationContext(async () => {
-      // Run the Function
-      const result = await httpTrigger(context, req);
-
-      appInsights.defaultClient.flush();
-
-      return result;
-  }, correlationContext)();
-};
+export default httpTrigger;
