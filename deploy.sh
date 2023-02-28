@@ -37,7 +37,8 @@ MSYS_NO_PATHCONV=1 az eventgrid event-subscription create \
 	--name eventSubscription \
     --source-resource-id /subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.EventGrid/topics/$eventgridTopic \
     --endpoint https://$functionAppName.azurewebsites.net/api/$functionName \
-    --event-delivery-schema cloudeventschemav1_0
+    --event-delivery-schema cloudeventschemav1_0 \
+    --delivery-attribute-mapping traceparent dynamic traceparent
 
 # az group delete --name $resourceGroupName --yes
 # eg: az group delete --name EGFA_resourcegroup --yes

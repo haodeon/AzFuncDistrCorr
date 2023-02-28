@@ -6,6 +6,7 @@ appInsights.start();
 
 import { Context, HttpRequest } from "@azure/functions";
 import { EventGridPublisherClient, AzureKeyCredential } from "@azure/eventgrid";
+import { context as ctxapi, propagation } from '@opentelemetry/api';
 
 const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> => {
   context.log('HTTP trigger function processed a request.');
@@ -23,6 +24,7 @@ const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> =>
     new AzureKeyCredential(process.env["EVENTGRID_ACCESS_KEY"])
   );
 
+  const ctx = propagation.extract(ctxapi.active(), context.traceContext)
   await client.send([
     {
       type: "azure.sdk.eventgrid.samples.cloudevent",
@@ -31,7 +33,13 @@ const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> =>
         message: responseMessage
       },
     },
-  ]);
+  ],
+    {
+      tracingOptions: {
+        tracingContext: ctx,
+      },
+    },
+  );
 
   context.res = {
     // status: 200, /* Defaults to 200 */
