@@ -10,7 +10,8 @@ var applicationInsightsName = '${projectName}ai'
 var storageAccountName = '${projectName}sa'
 var containerName = 'uploaded-files'
 var eventGridTopicName = '${projectName}egt'
-
+var serviceBusNamespaceName = '${projectName}sbn'
+var serviceBusQueueName = '${projectName}sbq'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2021-08-01' = {
   name: storageAccountName
@@ -30,6 +31,33 @@ resource eventGridTopic 'Microsoft.EventGrid/topics@2022-06-15' = {
   location: location
   properties: {
     inputSchema: 'CloudEventSchemaV1_0'
+  }
+}
+
+resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-01-01-preview' = {
+  name: serviceBusNamespaceName
+  location: location
+  sku: {
+    name: 'Standard'
+  }
+  properties: {}
+}
+
+resource serviceBusQueue 'Microsoft.ServiceBus/namespaces/queues@2022-01-01-preview' = {
+  parent: serviceBusNamespace
+  name: serviceBusQueueName
+  properties: {
+    lockDuration: 'PT5M'
+    maxSizeInMegabytes: 1024
+    requiresDuplicateDetection: false
+    requiresSession: false
+    defaultMessageTimeToLive: 'P10675199DT2H48M5.4775807S'
+    deadLetteringOnMessageExpiration: false
+    duplicateDetectionHistoryTimeWindow: 'PT10M'
+    maxDeliveryCount: 10
+    autoDeleteOnIdle: 'P10675199DT2H48M5.4775807S'
+    enablePartitioning: false
+    enableExpress: false
   }
 }
 
@@ -53,6 +81,8 @@ resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
     publicNetworkAccessForQuery: 'Enabled'
   }
 }
+
+var serviceBusEndpoint = '${serviceBusNamespace.id}/AuthorizationRules/RootManageSharedAccessKey'
 
 resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
   name: functionAppName
@@ -93,6 +123,10 @@ resource functionApp 'Microsoft.Web/sites@2021-03-01' = {
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'
           value: 'node'
+        }
+        {
+          name: 'AzureWebJobsServiceBus'
+          value: listKeys(serviceBusEndpoint, serviceBusNamespace.apiVersion).primaryConnectionString
         }
         {
           name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'

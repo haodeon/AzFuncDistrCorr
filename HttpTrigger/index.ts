@@ -6,6 +6,7 @@ appInsights.start();
 
 import { Context, HttpRequest } from "@azure/functions";
 import { EventGridPublisherClient, AzureKeyCredential } from "@azure/eventgrid";
+import { ServiceBusClient, ServiceBusMessage } from '@azure/service-bus';
 import { context as ctxapi, propagation } from '@opentelemetry/api';
 
 const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> => {
@@ -24,6 +25,9 @@ const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> =>
     new AzureKeyCredential(process.env["EVENTGRID_ACCESS_KEY"])
   );
 
+  const sbClient = new ServiceBusClient(process.env["AzureWebJobsServiceBus"])
+  const sender = sbClient.createSender("lhiynjo35oehksbq")
+
   const ctx = propagation.extract(ctxapi.active(), context.traceContext)
   await client.send([
     {
@@ -40,6 +44,23 @@ const httpTrigger = async (context: Context, req: HttpRequest): Promise<void> =>
       },
     },
   );
+
+  try {
+    console.log(`Sending one scientists`);
+    const message: ServiceBusMessage = {
+      contentType: "application/json",
+      subject: "Scientist",
+      body: { firstName: "Albert", lastName: "Einstein", message: responseMessage},
+      timeToLive: 5 * 60 * 1000, // message expires in 2 minutes
+    };
+    await sender.sendMessages(message, {
+      tracingOptions: {
+        tracingContext: ctx,
+      },
+    });
+  } finally {
+    await sbClient.close();
+  }
 
   context.res = {
     // status: 200, /* Defaults to 200 */
